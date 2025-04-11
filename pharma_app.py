@@ -20,45 +20,62 @@ except ImportError:
             st.session_state.unidecode_warning_shown = True
         return str(x)
 
+
 # --- Page Config (MUST be the first Streamlit command) ---
 st.set_page_config(layout="wide")
 
 # --- Determine Project Root Relative to THIS script ---
-# This makes paths work both locally and on Streamlit Cloud
-APP_DIR = Path(__file__).parent # Directory containing pharma_app.py
-PROJECT_ROOT = APP_DIR # ASSUMPTION: excel_data/, assets/, CSV are at the SAME level as the script
-# If they are in the PARENT directory use: PROJECT_ROOT = APP_DIR.parent
+# Assumes script is at the root of the project structure cloned by Streamlit Cloud
+APP_DIR = Path(__file__).parent
+PROJECT_ROOT = APP_DIR
 
 # --- Configuration ---
-EXCEL_DATA_ROOT = PROJECT_ROOT / "excel_data" # <<< Path within the repo
+EXCEL_DATA_ROOT = PROJECT_ROOT / "excel_data" # <<< Path to Excel files WITHIN the repo
 
-CATEGORY_SUBDIRS = [ # List of CATEGORY names (must match folder names in excel_data)
-    "Antibiotiques", "Comprimés", "Comprimes antalgiques",
-    "Cremes - Pommades", "Gouttes", "Injections", "Ovules vaginaux",
-    "Pulvérisations", "Sachets", "Sirop", "Suppositoires"
+# CORRECTED LIST - Names must EXACTLY match folder names in excel_data on GitHub
+CATEGORY_SUBDIRS = [
+    "Antibiotiques",
+    "Comprimés",  # NFC 'é'
+    "Comprimes antalgiques",
+    "Cremes - Pommades",
+    "Gouttes",
+    "Injections",
+    "Ovules vaginaux",
+    "Pulvérisations", # NFC 'é'
+    "Sachets",
+    "Sirop",
+    "Suppositoires"
 ]
-# Categories/Folders where URLs are expected directly in specific cells (will ignore name->URL map)
+# Categories where URLs are expected directly in specific cells (will ignore name->URL map)
 SPECIAL_HANDLING_CATEGORIES = ["Antibiotiques", "Sachets", "Sirop", "Suppositoires"] # Corrected 'Sirop'
 
-# --- Populate Category Paths (Now relative to repo) ---
-category_excel_path_map = {} # Map category name to its Excel file path IN THE REPO
+# --- Populate Category Paths (Relative to repo) ---
+# Map category name to its Excel file path IN THE REPO structure
+category_excel_path_map = {}
 for sub_dir in CATEGORY_SUBDIRS:
-    # Normalize name from list, just in case (e.g., handle é vs e´)
-    normalized_subdir_name = unicodedata.normalize('NFC', sub_dir)
-    # ASSUMPTION: Excel filename MATCHES the category directory name
-    # Path structure: project_root/excel_data/CategoryName/CategoryName.xlsx
-    excel_file_path = EXCEL_DATA_ROOT / normalized_subdir_name / f"{normalized_subdir_name}.xlsx"
+    # Use the name directly from the corrected list
+    # No extra normalization needed here if list matches folders exactly
+    normalized_subdir_name = sub_dir
 
-    # Store the path relative to the project root (as string for consistency)
-    # We don't check existence here; will check in read_excel_sheets
+    # --- Handle potential filename mismatch for specific categories ---
+    # Example: If folder is "Cremes - Pommades" but file is "Pommade - Cremes.xlsx"
+    # (Assuming you renamed the file to match the folder as recommended)
+    excel_filename = f"{normalized_subdir_name}.xlsx"
+    # --- Uncomment and modify below if you have other mismatches ---
+    # if normalized_subdir_name == "Another Category":
+    #     excel_filename = "DifferentExcelName.xlsx"
+
+    # Construct the full path expected within the repository
+    excel_file_path = EXCEL_DATA_ROOT / normalized_subdir_name / excel_filename
+    # Store path as string
     category_excel_path_map[normalized_subdir_name] = str(excel_file_path)
 
-# Category names for the dropdown come directly from the defined list
+# Category names for the dropdown come directly from the corrected list
 category_names = CATEGORY_SUBDIRS
 
 
 # --- Load Image URL Mapping from CSV ---
-csv_path = PROJECT_ROOT / "github_image_urls_CATEGORIZED.csv" # Relative to project root
+csv_path = PROJECT_ROOT / "github_image_urls_CATEGORIZED.csv" # Use the categorized CSV
 # Map holds { 'categorykey-normalized_filename_stem': url }
 image_url_map = {}
 
@@ -67,14 +84,14 @@ def normalize_for_lookup(text):
     """Lowercase, remove accents (best effort), replace non-alphanum with underscore."""
     if not isinstance(text, str): text = str(text)
     try:
-        # NFC normalization first
+        # NFC normalization first helps handle composed vs decomposed chars
         normalized = unicodedata.normalize('NFC', text)
-        # Remove accents -> convert to closest ASCII
+        # Remove accents -> convert to closest ASCII representation
         ascii_text = unidecode(normalized)
     except Exception as e:
         print(f"Warning: Text normalization error for '{text}': {e}. Using original.")
         ascii_text = text # Fallback
-    # Lowercase and replace non-alphanumeric/non-underscore chars with underscore
+    # Lowercase, replace one or more non-alphanumeric/non-underscore chars with a single underscore
     cleaned = re.sub(r'[^\w]+', '_', ascii_text, flags=re.UNICODE).lower()
     # Remove leading/trailing underscores
     cleaned = cleaned.strip('_')
@@ -99,18 +116,26 @@ def load_url_map(path):
             return {}
 
         processed_count = 0; skipped_count = 0; duplicate_keys = 0
+        # Iterate through rows to build the map
         for index, row in df_map.iterrows():
             try:
+                 # Get data, handling potential missing values
                  category = str(row['category']) if pd.notna(row['category']) else None
                  filename = str(row['filename']) if pd.notna(row['filename']) else None
                  raw_url = str(row['raw_url']) if pd.notna(row['raw_url']) else None
 
+                 # Check if all necessary data is present for this row
                  if category and filename and raw_url:
+                     # Normalize category name for the key
                      category_key = normalize_for_lookup(category)
+                     # Normalize filename stem (remove extension) for the key
                      filename_stem = Path(filename).stem
                      filename_key = normalize_for_lookup(filename_stem)
+
+                     # Create the composite key
                      composite_key = f"{category_key}-{filename_key}"
 
+                     # Add to map, handle potential duplicates (overwrite keeps last found)
                      if composite_key in url_map: duplicate_keys += 1
                      url_map[composite_key] = str(raw_url) # Ensure URL is string
                      processed_count += 1
@@ -120,12 +145,12 @@ def load_url_map(path):
                  print(f"Error processing CSV row {index+2}: {e}, Row data: {row.to_dict()}")
 
         print(f"Loaded {processed_count} image URLs (skipped {skipped_count}, dups overwritten: {duplicate_keys}).")
-        if not url_map: st.warning(f"Image URL map loaded empty from '{path.name}'.")
-        # print(f"DEBUG MAP KEYS (first 10): {list(url_map.keys())[:10]}") # Optional
+        if not url_map: st.warning(f"Image URL map loaded empty from '{path.name}'. Check CSV content and paths.")
+        # print(f"DEBUG MAP KEYS (first 10): {list(url_map.keys())[:10]}") # Optional Debug
         return url_map
     except Exception as e:
         st.error(f"FATAL: Failed to load/process CSV '{path.name}': {e}")
-        return {}
+        return {} # Return empty on major failure
 
 # Load the map (now occurs after set_page_config)
 image_url_map = load_url_map(csv_path)
@@ -137,9 +162,9 @@ def read_excel_sheets(excel_file_path_str): # Takes the full path string
     excel_file_path = Path(excel_file_path_str) # Convert string path to Path object
     excel_filename = excel_file_path.name
 
-    # Check if the file exists at the calculated path
+    # Check if the file exists at the calculated path WITHIN THE REPO
     if not excel_file_path.is_file():
-        st.error(f"Excel file not found at expected path: '{excel_file_path}'. Check file exists in repository structure.")
+        st.error(f"Excel file not found at expected path: '{excel_file_path}'. Check file exists in repo structure ('excel_data' folder).")
         return None, None # Return None if file not found
 
     st.info(f"Reading sheets from file: {excel_filename}")
@@ -147,11 +172,11 @@ def read_excel_sheets(excel_file_path_str): # Takes the full path string
         # Read all sheets, assume header row 0, handle blanks, read as string
         all_sheets_data = pd.read_excel(
             excel_file_path, # Use the Path object
-            sheet_name=None,
-            header=0,
-            keep_default_na=False,
-            na_values=[''],
-            dtype=str # Read all as string initially
+            sheet_name=None, # Read all sheets
+            header=0,        # Use first row as header
+            keep_default_na=False, # Keep blanks initially
+            na_values=[''],  # Treat blanks as NaN for pandas logic
+            dtype=str        # Attempt to read all data as string initially
         )
         # Clean column names for all loaded sheets
         for sheet_name, df in all_sheets_data.items():
@@ -175,18 +200,20 @@ def dataframe_to_html_universal_links(df, table_id="display-table", current_cate
         return "<p>Table is empty.</p>"
 
     df_processed = df.copy()
-    # Robustly replace various forms of empty/null with numpy NaN for processing
-    df_processed.replace(['', None, 'nan', 'NaN', pd.NA], np.nan, inplace=True)
+    df_processed.replace(['', None, 'nan', 'NaN', pd.NA], np.nan, inplace=True) # Robust NaN replacement
 
     # --- Pre-calculate rowspans ---
     rowspans = pd.DataFrame(1, index=df_processed.index, columns=df_processed.columns)
-    merge_col_indices = [1, 2] # Example: Adjust based on common merge columns
+    merge_col_indices = [1, 2] # Example: Adjust if necessary
 
     for c_idx in merge_col_indices:
         if c_idx >= len(df_processed.columns): continue
-        active_span_start_row_index = np.nan # Use NaN to indicate no active span
+        active_span_start_row_index = np.nan
         for r_idx_pos, r_idx_abs in enumerate(df_processed.index):
+            # Check index existence before accessing .loc
+            if r_idx_abs not in df_processed.index or df_processed.columns[c_idx] not in df_processed.columns: continue
             current_val = df_processed.loc[r_idx_abs, df_processed.columns[c_idx]]
+
             if pd.notna(current_val):
                  if pd.notna(active_span_start_row_index):
                      span_len = r_idx_pos - df_processed.index.get_loc(active_span_start_row_index)
@@ -228,6 +255,7 @@ def dataframe_to_html_universal_links(df, table_id="display-table", current_cate
         if skip_next_header_cols > 0: skip_next_header_cols -= 1; continue
         colspan = 1
         for lookahead_c_idx in range(c_idx + 1, len(df_processed.columns)):
+            # Check if column name is empty string (result of merge or unnamed)
             if df_processed.columns[lookahead_c_idx] == "": colspan += 1
             else: break
         colspan_attr = f' colspan="{colspan}"' if colspan > 1 else ""
@@ -244,19 +272,22 @@ def dataframe_to_html_universal_links(df, table_id="display-table", current_cate
     for r_idx_abs in df_processed.index:
         html_parts.append("<tr>")
         for c_idx, col_name in enumerate(df_processed.columns):
-            if r_idx_abs not in rowspans.index: continue # Safety check
-            span = rowspans.loc[r_idx_abs, rowspans.columns[c_idx]]
+            # Check index exists before accessing rowspans and df_processed
+            if r_idx_abs not in rowspans.index or r_idx_abs not in df_processed.index: continue
+            if col_name not in df_processed.columns: continue # Check column exists
+
+            span = rowspans.loc[r_idx_abs, col_name] # Access using column name
             if span == 0: continue
             else:
                 rowspan_attr = f' rowspan="{span}"' if span > 1 else ""
                 current_value = df_processed.loc[r_idx_abs, col_name]
                 cell_display_value = "" if pd.isna(current_value) else str(current_value).strip()
                 escaped_display_value = html.escape(cell_display_value)
+
                 td_content = escaped_display_value
                 link_url = None; link_text = escaped_display_value; filename_for_popup = "image"
 
                 # --- Link Logic ---
-                # Cond 1: Use map? (Only if url_map provided, current col is name col, cell has value)
                 if url_map and c_idx == name_col_index and cell_display_value:
                     try:
                         normalized_name_lookup = normalize_for_lookup(cell_display_value)
@@ -264,20 +295,18 @@ def dataframe_to_html_universal_links(df, table_id="display-table", current_cate
                         # print(f" Checking Name: '{cell_display_value}' -> Key: '{composite_key_lookup}'") # Debug
                         if composite_key_lookup in url_map:
                             link_url = url_map[composite_key_lookup]
-                            link_text = escaped_display_value # Show original name from Excel
+                            link_text = escaped_display_value
                             try: filename_for_popup = link_url.split('/')[-1].split('?')[0]
                             except: pass
                             # print(f"    FOUND URL: {link_url}") # Debug
                         # else: print(f"    NOT FOUND in map.") # Debug
-                    except Exception as e: print(f"Error during link lookup for '{cell_display_value}': {e}")
+                    except Exception as e: print(f"Error link lookup: {e}");
 
-                # Cond 2: Is cell content a URL? (Check only if link not found above)
                 elif link_url is None and cell_display_value.startswith(("http://", "https://")):
                      link_url = cell_display_value
-                     try: filename_for_popup = link_url.split('/')[-1].split('?')[0]; link_text = html.escape(filename_for_popup) # Display filename
-                     except: link_text = "View Image" # Fallback
+                     try: filename_for_popup = link_url.split('/')[-1].split('?')[0]; link_text = html.escape(filename_for_popup)
+                     except: link_text = "View Image"
 
-                # --- Generate <a> tag if URL was found ---
                 if link_url:
                     escaped_url = html.escape(link_url, quote=True)
                     escaped_filename = html.escape(filename_for_popup, quote=True)
@@ -289,7 +318,7 @@ def dataframe_to_html_universal_links(df, table_id="display-table", current_cate
 
     return "".join(html_parts)
 
-# --- JavaScript block for the popup (Identical to previous correct version) ---
+# --- JavaScript block for the popup (Identical) ---
 javascript_popup_script = """
 <script>
 (function() {
@@ -305,6 +334,7 @@ javascript_popup_script = """
         } else { console.error('Could not find URL for link:', link); alert('Could not retrieve image URL.'); }
     }
     setTimeout(function() {
+        // Consider targeting links only within the specific table ID if multiple tables might use this class
         const links = document.querySelectorAll('a.external-image-popup');
         console.log('Found ' + links.length + ' external image links to attach listeners.');
         links.forEach(link => {
@@ -331,18 +361,18 @@ else:
         st.header(f"Category: {selected_category_name}")
 
         # --- Get the EXPECTED Excel file path WITHIN the repo ---
+        # Use the name from the dropdown (which matches CATEGORY_SUBDIRS exactly)
         selected_excel_path_str = category_excel_path_map.get(selected_category_name)
 
         if not selected_excel_path_str:
-             st.error(f"Internal setup error: No Excel path configured for category '{selected_category_name}'.")
+             st.error(f"Internal setup error: No Excel path configured for category '{selected_category_name}'. Check `category_excel_path_map` construction.")
         else:
             # --- Read Excel file using the path relative to the repo ---
-            # This function now expects the full path string
             sheets_data, filename_read = read_excel_sheets(selected_excel_path_str)
 
             # --- Handle results of reading Excel ---
             if sheets_data is None: pass # Error displayed by function
-            elif not sheets_data: st.warning(f"Excel file '{filename_read}' appears empty or unreadable.")
+            elif not sheets_data: st.warning(f"Excel file '{filename_read}' (for {selected_category_name}) appears empty or unreadable.")
             else:
                 sheet_names = list(sheets_data.keys()); selected_sheet_name = None
                 if len(sheet_names) == 1: selected_sheet_name = sheet_names[0]
@@ -356,24 +386,33 @@ else:
                 if selected_sheet_name:
                     st.subheader(f"Data for Sheet: {selected_sheet_name}")
                     df_original = sheets_data.get(selected_sheet_name)
-                    if df_original is None: st.error("Could not retrieve sheet data.")
-                    elif df_original.empty: st.write("_Sheet is empty._")
+                    if df_original is None: st.error(f"Could not retrieve data for sheet '{selected_sheet_name}'.")
+                    elif df_original.empty: st.write(f"_Sheet '{selected_sheet_name}' is empty._")
                     else:
-                        table_id = f"table_{re.sub(r'[^a-zA-Z0-9_]+', '_', selected_category_name)}_{re.sub(r'[^a-zA-Z0-9_]+', '_', selected_sheet_name)}"
+                        # Generate unique table ID using sanitized names
+                        sanitized_category = re.sub(r'[^a-zA-Z0-9_]+', '_', selected_category_name)
+                        sanitized_sheet = re.sub(r'[^a-zA-Z0-9_]+', '_', selected_sheet_name)
+                        table_id = f"table_{sanitized_category}_{sanitized_sheet}"
+
+                        # Determine linking strategy based on category name
                         use_url_map = selected_category_name not in SPECIAL_HANDLING_CATEGORIES
                         current_url_map = image_url_map if use_url_map else None
                         name_column_to_link = 0 # Assume name is in first col (index 0)
 
+                        # Generate HTML table string
                         html_table_content = dataframe_to_html_universal_links(
                             df_original,
                             table_id=table_id,
-                            current_category_name=selected_category_name, # Pass category for lookup
+                            current_category_name=selected_category_name, # Pass category name
                             url_map=current_url_map,
                             name_col_index=name_column_to_link
                         )
+
+                        # Combine table HTML and the JavaScript for popups
                         full_html_content = html_table_content + javascript_popup_script
-                        # Use components.html to render table and execute script
-                        components.html(full_html_content, height=800, scrolling=True)
+
+                        # Render using components.html
+                        components.html(full_html_content, height=800, scrolling=True) # Adjust height
 
                 elif len(sheet_names) > 1 and not selected_sheet_name: st.info("Please select a sheet.")
     elif not selected_category_name: st.info("Please select a category.")
